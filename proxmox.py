@@ -15,15 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-# Updated 2016 by Matt Harris <matthaeus.harris@gmail.com>
-#
-# Added support for Proxmox VE 4.x
-# Added support for using the Notes field of a VM to define groups and variables:
-# A well-formatted JSON object in the Notes field will be added to the _meta
-# section for that VM.  In addition, the "groups" key of this JSON object may be
-# used to specify group membership:
-#
-# { "groups": ["utility", "databases"], "a": false, "b": true }
+# Updated 2018 by Dmitry Laptev
 
 import urllib
 
@@ -40,7 +32,6 @@ from six import iteritems
 from six.moves.urllib.error import HTTPError
 
 from ansible.module_utils.urls import open_url
-
 
 class ProxmoxNodeList(list):
     def get_names(self):
@@ -62,10 +53,7 @@ class ProxmoxVMList(list):
             self.append(ProxmoxVM(item))
 
     def get_names(self):
-        if self.ver >= 4.0:
-            return [vm['name'] for vm in self if vm['template'] != 1]
-        else:
-            return [vm['name'] for vm in self]
+        return list(vm['name'] for vm in self if vm['template'] != 1)
 
     def get_by_name(self, name):
         results = [vm for vm in self if vm['name'] == name]
@@ -91,7 +79,8 @@ class ProxmoxVersion(dict):
 
 class ProxmoxPool(dict):
     def get_members_name(self):
-        return [member['name'] for member in self['members'] if member['template'] != 1]
+        return list(member['name'] for member in self['members'] if member['template'] != 1)
+        #return [member['name'] for member in self['members'] if member['template'] != 1]
 
 
 class ProxmoxAPI(object):
@@ -175,12 +164,6 @@ class ProxmoxAPI(object):
     def node_lxc_description(self, node, vm):
         return self.vm_description_by_type(node, vm, 'lxc')
 
-    def node_openvz(self, node):
-        return self.vms_by_type(node, 'openvz')
-
-    def node_openvz_description(self, node, vm):
-        return self.vm_description_by_type(node, vm, 'openvz')
-
     def pools(self):
         return ProxmoxPoolList(self.get('api2/json/pools'))
 
@@ -215,21 +198,17 @@ def main_list(options, config_path):
             raise error
         results['all']['hosts'] += qemu_list.get_names()
         results['_meta']['hostvars'].update(qemu_list.get_variables())
-        if proxmox_api.version().get_version() >= 4.0:
-            lxc_list = proxmox_api.node_lxc(node)
-            results['all']['hosts'] += lxc_list.get_names()
-            results['_meta']['hostvars'].update(lxc_list.get_variables())
-        else:
-            openvz_list = proxmox_api.node_openvz(node)
-            results['all']['hosts'] += openvz_list.get_names()
-            results['_meta']['hostvars'].update(openvz_list.get_variables())
+        
+        lxc_list = proxmox_api.node_lxc(node)
+        results['all']['hosts'] += lxc_list.get_names()
+        results['_meta']['hostvars'].update(lxc_list.get_variables())
+        
 
         # Merge QEMU and Containers lists from this node
         node_hostvars = qemu_list.get_variables().copy()
-        if proxmox_api.version().get_version() >= 4.0:
-            node_hostvars.update(lxc_list.get_variables())
-        else:
-            node_hostvars.update(openvz_list.get_variables())
+        
+        node_hostvars.update(lxc_list.get_variables())
+        
 
         # Check only VM/containers from the current node
         for vm in node_hostvars:
@@ -238,19 +217,21 @@ def main_list(options, config_path):
                 type = results['_meta']['hostvars'][vm]['proxmox_type']
             except KeyError:
                 type = 'qemu'
-            try:
-                description = proxmox_api.vm_description_by_type(node, vmid, type)['description']
-            except KeyError:
-                description = None
 
             try:
-                metadata = json.loads(description)
-            except TypeError:
-                metadata = {}
-            except ValueError:
-                metadata = {
-                    'notes': description
-                }
+                #get ip from cloud init              
+                ipc = proxmox_api.vm_description_by_type(node, vmid, type)['ipconfig0']
+
+                for x in ipc.split(','):
+                    sp = x.split('=')
+                    if sp[0] == "ip":
+                        ip = sp[1].split('/')[0]
+            except KeyError:
+                ip = None
+
+            metadata = {
+                'ansible_host': ip
+            }
 
             if 'groups' in metadata:
                 # print metadata
